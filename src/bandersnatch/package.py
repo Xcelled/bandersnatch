@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlparse
 
 import pkg_resources
 import requests
+from requests.exceptions import HTTPError
 from packaging.utils import canonicalize_name
 
 from . import utils
@@ -19,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 class Package:
 
-    tries = 0
     sleep_on_stale = 1
 
     def __init__(self, name, serial, mirror):
@@ -91,13 +91,13 @@ class Package:
 
         return True
 
-    def sync(self, stop_on_error=False, attempts=3):
-        self.tries = 0
+    def sync(self, stop_on_error=False, max_attempts=3):
+        tries = 0
         self.json_saved = False
         try:
-            while self.tries < attempts:
+            while tries < max_attempts:
                 try:
-                    logger.info(f"Syncing package: {self.name} (serial {self.serial})")
+                    logger.info(f"Syncing package: {self.name} (serial {serial})")
                     try:
                         package_info = self.mirror.master.get(
                             f"/pypi/{self.name}/json", self.serial
@@ -118,23 +118,18 @@ class Package:
                     self.sync_simple_page()
                     self.mirror.record_finished_package(self.name)
                     break
-                except StalePage:
-                    self.tries += 1
+                except (StalePage, HTTPError):
+                    tries += 1
                     logger.error(
-                        "Stale serial for package {} - Attempt {}".format(
-                            self.name, self.tries
-                        )
+                        f"Problem getting package information for {self.name} - Attempt {tries} of {max_attempts}",
+                        exc_info=True,
                     )
                     # Give CDN a chance to update.
-                    if self.tries < attempts:
+                    if tries < max_attempts:
                         time.sleep(self.sleep_on_stale)
                         self.sleep_on_stale *= 2
                         continue
-                    logger.error(
-                        "Stale serial for {} ({}) not updating. Giving up.".format(
-                            self.name, self.serial
-                        )
-                    )
+                    logger.error(f"Problem with {self.name} not resolving. Giving up.")
                     self.mirror.errors = True
         except Exception:
             logger.exception(f"Error syncing package: {self.name}@{self.serial}")
